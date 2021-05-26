@@ -59,11 +59,11 @@ func main() {
 	//WEB服务
 	s := g.Server()
 	s.BindHandler("/", func(r *ghttp.Request) {
+		//获取auth
+		getAuth()
 		r.Response.WriteTpl("index.html")
 	})
 	s.BindHandler("/qrcode", func(r *ghttp.Request) {
-		//获取auth
-		getAuth()
 		result := getQrcode()
 		r.Response.WriteJsonExit(result)
 	})
