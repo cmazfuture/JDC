@@ -1,7 +1,7 @@
 package main
 
 import (
-	_ "getJDCookie/packed"
+	//_ "getJDCookie/packed"
 	"io/ioutil"
 	"log"
 	"os"
@@ -22,10 +22,12 @@ var QLurl string
 var Config string = `
 #公告设置
 [app]
-	explain       = "扫码后请返回页面完成登录" #页面使用说明显示
-	path          = "QL/config/auth.json" #QL文件路径设置，一般无需更改
-    QLip          = "http://127.0.0.1" #青龙面板的ip，部署于同一台服务器时不用更改
-    QLport        = "5700" #青龙面板的端口，默认为5700
+    explain         = "扫码后请返回页面完成登录" #页面使用说明显示
+    path            = "QL/config/auth.json" #QL文件路径设置，一般无需更改
+    QLip            = "http://127.0.0.1" #青龙面板的ip，部署于一台服务器时不用更改
+    QLport          = "5700" #青龙面板的端口，默认为5700
+    logName         = "chinnkarahoi_jd_scripts_jd_bean_change" #日志脚本名称
+    allowAdd        = "0" #是否允许添加账号（0允许1不允许）不允许添加时则只允许已有账号登录
 
 #web服务设置
 [server]
@@ -172,6 +174,7 @@ func getUserLog(ccid string) string {
 func getLog() string {
 	var fileName string
 	var result string
+	var logName string
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	Ntime := strconv.FormatInt(time.Now().In(loc).Unix(), 10)
 	c := g.Client()
@@ -194,7 +197,11 @@ func getLog() string {
 			if !ok {
 				log.Println("noval")
 			}
-			if name == "chinnkarahoi_jd_bean_change" {
+			logName = g.Cfg().GetString("app.logName")
+			if logName == "" {
+				logName = "chinnkarahoi_jd_scripts_jd_bean_change"
+			}
+			if name == logName {
 				filesv := val["files"]
 				files, ok := filesv.(g.Array)
 				if !ok {
@@ -209,7 +216,7 @@ func getLog() string {
 		}
 	}
 	//获取文件内容
-	res, _ := c.Get(QLurl + "/api/logs/chinnkarahoi_jd_bean_change/" + fileName + "?t=" + Ntime)
+	res, _ := c.Get(QLurl + "/api/logs/" + logName + "/" + fileName + "?t=" + Ntime)
 	defer res.Close()
 	if j, err := gjson.DecodeToJson(res.ReadAllString()); err != nil {
 		log.Println("error！can't read the auth file!")
@@ -329,9 +336,8 @@ func cookieDel(id string) string {
 	c := g.Client()
 	c.SetHeaderMap(QLheader)
 
-	r, _ := c.Delete(QLurl + "/api/cookies/" + id + "?t=" + Ntime)
+	r, _ := c.Delete(QLurl+"/api/cookies?t="+Ntime, `["`+id+`"]`)
 	defer r.Close()
-
 	return r.ReadAllString()
 }
 
@@ -439,6 +445,14 @@ func addCookie(cookie string) (int, string) {
 	//获取cookie列表
 	ckList := cookieList()
 	if ckList == `{"code":200,"data":[]}` {
+		//检查是否允许添加
+		allow := g.Cfg().GetString("app.allowAdd")
+		if allow == "" {
+			allow = "0"
+		}
+		if allow != "0" {
+			return 400, "系统暂时不允许添加账号！"
+		}
 		cookieAdd(cookie)
 		return 0, "添加成功！"
 	}
@@ -480,6 +494,14 @@ func addCookie(cookie string) (int, string) {
 
 	}
 	if isNew {
+		//检查是否允许添加
+		allow := g.Cfg().GetString("app.allowAdd")
+		if allow == "" {
+			allow = "0"
+		}
+		if allow != "0" {
+			return 400, "系统暂时不允许添加账号！"
+		}
 		cookieAdd(cookie)
 		return 0, "添加成功"
 	} else {

@@ -83,8 +83,11 @@ var vm = new Vue({
                     }).then(function(res){
                         vm.logs = res.data.data
                     })
-                }else{
-                    
+                }else if(res.data.code == 400){
+                    clearInterval(vm.timer)
+                    var inst = new mdui.Dialog('#dialog');
+                    vm.msg = res.data.data
+                    inst.open()
                 }
             })
         },
