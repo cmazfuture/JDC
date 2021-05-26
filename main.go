@@ -1,7 +1,7 @@
 package main
 
 import (
-	//_ "getJDCookie/packed"
+	_ "getJDCookie/packed"
 	"io/ioutil"
 	"log"
 	"os"
