@@ -9,5 +9,9 @@
 ## 说明
 本程序仅供交流学习使用，请勿使用本程序进行商业行为。
 
+## 安装
+<https://ihuayu8.cn/ql-get-cookie.html>
+详细教程请看此文章
+
 ## 相关链接
 <https://github.com/whyour/qinglong>
