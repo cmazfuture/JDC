@@ -1,7 +1,6 @@
 package main
 
 import (
-	_ "getJDCookie/packed"
 	"io/ioutil"
 	"log"
 	"os"
@@ -22,22 +21,25 @@ var QLurl string
 var Config string = `
 #公告设置
 [app]
-    explain         = "扫码后请返回页面完成登录" #页面使用说明显示
-    path            = "QL/config/auth.json" #QL文件路径设置，一般无需更改
-    QLip            = "http://127.0.0.1" #青龙面板的ip，部署于一台服务器时不用更改
+    path            = "QL" #青龙面板映射文件夹名称,一般为QL或ql
+    QLip            = "http://127.0.0.1" #青龙面板的ip
     QLport          = "5700" #青龙面板的端口，默认为5700
+    notice          = "京东扫描二维码登录" #公告/说明
+    pushQr          = "" #消息推送二维码链接
     logName         = "chinnkarahoi_jd_scripts_jd_bean_change" #日志脚本名称
-    allowAdd        = "0" #是否允许添加账号（0允许1不允许）不允许添加时则只允许已有账号登录
+    allowAdd        = 0 #是否允许添加账号（0允许1不允许）不允许添加时则只允许已有账号登录
+    allowNum        = 100 #允许添加账号的最大数量,0w为不限制
+
 
 #web服务设置
 [server]
-	address        = ":5701" #端口号设置
-    serverRoot     = "public" #静态目录设置，请勿更改
-	serverAgent    = "JDCookie" #服务端UA
+    address         = ":5701" #端口号设置
+    serverRoot      = "public" #静态目录设置，请勿更改
+    serverAgent     = "JDCookie" #服务端UA
 
 #模板设置
 [viewer]
-	Delimiters  =  ["${", "}"] #模板标签，请勿更改
+    Delimiters      = ["${", "}"] #模板标签，请勿更改
 `
 
 func main() {
@@ -53,15 +55,18 @@ func main() {
 	//获取auth
 	getAuth()
 
-	//测试QL接口
-	cookieList()
-
 	//WEB服务
 	s := g.Server()
-	s.BindHandler("/", func(r *ghttp.Request) {
-		//获取auth
+
+	//允许跨域
+	s.BindMiddlewareDefault(func(r *ghttp.Request) {
 		getAuth()
-		r.Response.WriteTpl("index.html")
+		r.Response.CORSDefault()
+		r.Middleware.Next()
+	})
+
+	s.BindHandler("/", func(r *ghttp.Request) {
+		r.Response.WriteExit("JDC is already!")
 	})
 	s.BindHandler("/qrcode", func(r *ghttp.Request) {
 		result := getQrcode()
@@ -76,10 +81,9 @@ func main() {
 			r.Response.WriteJsonExit(g.Map{"code": code, "data": data})
 		} else {
 			code, res := addCookie(data)
-			//设置面板cookie
+			//获取cid
 			_, cid := getId(data)
-			r.Cookie.Set("cid", cid)
-			r.Response.WriteJsonExit(g.Map{"code": code, "data": res})
+			r.Response.WriteJsonExit(g.Map{"code": code, "data": res, "cid": cid})
 		}
 
 	})
@@ -89,16 +93,16 @@ func main() {
 		r.Response.WriteJsonExit(g.Map{"code": 0, "data": "已成功从系统中移除你的账号！"})
 
 	})
-	s.BindHandler("/explain", func(r *ghttp.Request) {
-		r.Response.WriteJsonExit(g.Map{"code": 0, "data": g.Cfg().GetString("app.explain")})
+	s.BindHandler("/notice", func(r *ghttp.Request) {
+		r.Response.WriteJsonExit(g.Map{"code": 0, "data": g.Cfg().GetString("app.notice")})
+	})
+	s.BindHandler("/push_qr", func(r *ghttp.Request) {
+		r.Response.WriteJsonExit(g.Map{"code": 0, "data": g.Cfg().GetString("app.pushQr")})
 	})
 	s.BindHandler("/checkcookie", func(r *ghttp.Request) {
 		cid := r.GetString("cid")
-		if checkCookie(cid) {
-			r.Response.WriteJsonExit(g.Map{"code": 0, "status": 0})
-		} else {
-			r.Response.WriteJsonExit(g.Map{"code": 0, "status": 500})
-		}
+		res := checkCookie(cid)
+		r.Response.WriteExit(res)
 	})
 	s.BindHandler("/log", func(r *ghttp.Request) {
 		cid := r.GetString("cid")
@@ -106,7 +110,33 @@ func main() {
 		r.Response.WriteJsonExit(g.Map{"code": 0, "data": logs})
 
 	})
+	s.BindHandler("/node_info", func(r *ghttp.Request) {
+		res := nodeInfo()
+		r.Response.WriteJsonExit(res)
+
+	})
 	s.Run()
+}
+
+//获取服务器信息
+func nodeInfo() interface{} {
+	cookies := getCookieList2()
+	allow := g.Cfg().GetInt("app.allowNum")
+	now := len(cookies)
+	var isAllow bool
+	var Num int
+	if allow > now {
+		Num = allow - now + 1
+		isAllow = true
+	} else if allow == -1 {
+		Num = -1
+		isAllow = true
+	} else {
+		Num = 0
+		isAllow = false
+	}
+
+	return g.Map{"code": 0, "isAllow": isAllow, "Num": Num}
 }
 
 //截取目标段落
@@ -180,7 +210,11 @@ func getLog() string {
 	c := g.Client()
 	c.SetHeaderMap(QLheader)
 
-	r, _ := c.Get(QLurl + "/api/logs?t=" + Ntime)
+	r, err := c.Get(QLurl + "/api/logs?t=" + Ntime)
+	if err != nil {
+		log.Println("error!Please check QLip and QLport!errCode:1002")
+		os.Exit(1)
+	}
 	defer r.Close()
 	if j, err := gjson.DecodeToJson(r.ReadAllString()); err != nil {
 		log.Println("error！can't read the auth file!")
@@ -227,49 +261,16 @@ func getLog() string {
 
 }
 
-//cookie状态检测
-func checkCookie(ccid string) bool {
-	var result bool = false
+//账号状态检测
+func checkCookie(ccid string) string {
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	Ntime := strconv.FormatInt(time.Now().In(loc).Unix(), 10)
+	c := g.Client()
+	c.SetHeaderMap(QLheader)
 
-	//获取cookie列表
-	ckList := cookieList()
-	if ckList == `{"code":200,"data":[]}` {
-		return false
-	}
-	if j, err := gjson.DecodeToJson(ckList); err != nil {
-		log.Println("error！can't read the auth file!")
-	} else {
-		data := j.GetArray("data")
-		//检查账号
-		for _, v := range data {
-			val, ok := v.(g.Map)
-			if !ok {
-				log.Println("no")
-			}
-			//获取id
-			id := val["_id"]
-			cid, ok := id.(string)
-			if !ok {
-				log.Println("noid")
-			}
-			//获取状态
-			sta := val["status"]
-			status, ok := sta.(float64)
-			if !ok {
-				log.Println("nosta")
-			}
-
-			//判断如果一致，返回cid
-			if cid == ccid {
-				if status == 1 {
-					result = true
-				}
-			}
-
-		}
-
-	}
-	return result
+	r, _ := c.Get(QLurl + "/api/cookies/" + ccid + "/refresh?t=" + Ntime)
+	defer r.Close()
+	return r.ReadAllString()
 }
 
 //获取QLID
@@ -282,45 +283,53 @@ func getId(cookie string) (int, string) {
 	pin2 := re2J[1]
 
 	//获取cookie列表
-	ckList := cookieList()
-	if ckList == `{"code":200,"data":[]}` {
+	ckList := getCookieList()
+	ckList2 := getCookieList2()
+	if ckList == nil || ckList2 == nil {
 		return 1, "该账号不存在！"
 	}
-	if j, err := gjson.DecodeToJson(ckList); err != nil {
-		log.Println("error！can't read the auth file!")
-	} else {
-		data := j.GetArray("data")
-		//检查账号
-		for _, v := range data {
-			val, ok := v.(g.Map)
-			if !ok {
-				log.Println("no")
-			}
-			//获取cookie
-			value := val["value"]
-			ck, ok := value.(string)
-			if !ok {
-				log.Println("no")
-			}
-			//获取id
-			id := val["_id"]
-			cid, ok := id.(string)
-			if !ok {
-				log.Println("no")
-			}
-			//获取cookie中的pt_pin
-			re := regexp.MustCompile("pt_pin=(.*?);")
-			reJ := re.FindStringSubmatch(ck)
-			pin1 := reJ[1]
-			//判断如果一致，返回cid
-			if pin1 == pin2 {
-				isTrue = true
-				result = cid
-			}
 
+	var oldCk string
+	//获取原cookie
+	for i := 0; i < len(ckList2); i++ {
+		if ckList2[i] == "" {
+			continue
+		}
+		//获取cookie中的pt_pin
+		re3J := re2.FindStringSubmatch(ckList2[i])
+		pin3 := re3J[1]
+		if pin3 == pin2 {
+			oldCk = ckList2[i]
+		}
+	}
+
+	if oldCk == "" {
+		return 1, "未知错误！"
+	}
+
+	//检查账号
+	for _, v := range ckList {
+		j, err := gjson.DecodeToJson(v)
+		if err != nil {
+			log.Println("error！can't read cookieList!")
+			continue
+		}
+
+		//获取cookie
+		ck := j.GetString("value")
+
+		//获取cid
+		cid := j.GetString("_id")
+
+		//判断如果一致，返回cid
+		if oldCk == ck {
+			isTrue = true
+			result = cid
+			break
 		}
 
 	}
+
 	if isTrue {
 		return 0, result
 	} else {
@@ -376,7 +385,7 @@ func cookieList() string {
 
 	r, err := c.Get(QLurl + "/api/cookies?t=" + Ntime)
 	if err != nil {
-		log.Println("error!Please check QLip and QLport!")
+		log.Println("error!Please check QLip and QLport!errCode:1001")
 		os.Exit(1)
 	}
 	defer r.Close()
@@ -419,7 +428,7 @@ func checkConfig() {
 //获取auth
 func getAuth() {
 	//读取文件
-	f, err := os.OpenFile(path, os.O_RDONLY, 0766)
+	f, err := os.OpenFile(path+"/config/auth.json", os.O_RDONLY, 0766)
 	if err != nil {
 		log.Println(err.Error())
 	}
@@ -434,6 +443,34 @@ func getAuth() {
 	}
 }
 
+//获取cookie列表
+func getCookieList() []string {
+	//读取文件
+	f, err := os.OpenFile(path+"/db/cookie.db", os.O_RDONLY, 0766)
+	if err != nil {
+		log.Println(err.Error())
+	}
+	defer f.Close()
+	con, _ := ioutil.ReadAll(f)
+	//解析结果
+	list := strings.Split(string(con), "\n")
+	return list
+}
+
+//获取cookie列表
+func getCookieList2() []string {
+	//读取文件
+	f, err := os.OpenFile(path+"/config/cookie.sh", os.O_RDONLY, 0766)
+	if err != nil {
+		log.Println(err.Error())
+	}
+	defer f.Close()
+	con, _ := ioutil.ReadAll(f)
+	//解析结果
+	list := strings.Split(string(con), "\n")
+	return list
+}
+
 //登录添加cookie
 func addCookie(cookie string) (int, string) {
 	var isNew bool = true
@@ -443,8 +480,8 @@ func addCookie(cookie string) (int, string) {
 	pin2 := re2J[1]
 
 	//获取cookie列表
-	ckList := cookieList()
-	if ckList == `{"code":200,"data":[]}` {
+	ckList := getCookieList()
+	if ckList == nil {
 		//检查是否允许添加
 		allow := g.Cfg().GetString("app.allowAdd")
 		if allow == "" {
@@ -453,46 +490,43 @@ func addCookie(cookie string) (int, string) {
 		if allow != "0" {
 			return 400, "系统暂时不允许添加账号！"
 		}
+		//检查是否超过账号限制
+		allowNum := g.Cfg().GetInt("app.allowNum")
+		nowNum := len(ckList)
+		if allowNum <= nowNum && allowNum != -1 {
+			return 400, "账号已达上限，请更换节点添加！"
+		}
 		cookieAdd(cookie)
 		return 0, "添加成功！"
 	}
-	if j, err := gjson.DecodeToJson(ckList); err != nil {
-		log.Println("error！can't read the auth file!")
-		os.Exit(1)
-	} else {
-		data := j.GetArray("data")
-		//检查账号
-		for _, v := range data {
-			val, ok := v.(g.Map)
-			if !ok {
-				log.Println("no")
-			}
-			//获取cookie
-			value := val["value"]
-			ck, ok := value.(string)
-			if !ok {
-				log.Println("no")
-			}
-			//获取id
-			id := val["_id"]
-			cid, ok := id.(string)
-			if !ok {
-				log.Println("no")
-			}
-			//获取cookie中的pt_pin
-			re := regexp.MustCompile("pt_pin=(.*?);")
-			reJ := re.FindStringSubmatch(ck)
-			pin1 := reJ[1]
-			//判断如果一致，更新账号
-			if pin1 == pin2 {
-				isNew = false
-				cookieUpdate(cid, cookie)
-				return 0, "更新成功"
-			}
 
+	//检查账号
+	for _, v := range ckList {
+		j, err := gjson.DecodeToJson(v)
+		//解析结果
+		if err != nil {
+			log.Println("error！Json read error!")
+			continue
+		}
+		//获取cookie
+		cookieT := j.GetString("value")
+
+		//获取id
+		cid := j.GetString("_id")
+
+		//获取cookie中的pt_pin
+		re := regexp.MustCompile("pt_pin=(.*?);")
+		reJ := re.FindStringSubmatch(cookieT)
+		pin1 := reJ[1]
+		//判断如果一致，更新账号
+		if pin1 == pin2 {
+			isNew = false
+			cookieUpdate(cid, cookie)
+			return 0, "更新成功"
 		}
 
 	}
+
 	if isNew {
 		//检查是否允许添加
 		allow := g.Cfg().GetString("app.allowAdd")
@@ -501,6 +535,12 @@ func addCookie(cookie string) (int, string) {
 		}
 		if allow != "0" {
 			return 400, "系统暂时不允许添加账号！"
+		}
+		//检查是否超过账号限制
+		allowNum := g.Cfg().GetInt("app.allowNum")
+		nowNum := len(ckList)
+		if allowNum <= nowNum && allowNum != -1 {
+			return 400, "账号已达上限，请更换节点添加！"
 		}
 		cookieAdd(cookie)
 		return 0, "添加成功"
@@ -635,8 +675,8 @@ func getQrcode() interface{} {
 	for k, v := range cookies {
 		rawCookie += k + "=" + v + ";"
 	}
-	Fin := g.Map{"qrCodeUrl": qrCodeUrl, "okl_token": okl_token, "cookies": rawCookie, "token": token}
-	_ = qrcode.WriteFile(qrCodeUrl, qrcode.Medium, 256, "public/qr.png")
+	png, _ := qrcode.Encode(qrCodeUrl, qrcode.Medium, 256)
+	Fin := g.Map{"qrCode": png, "okl_token": okl_token, "cookies": rawCookie, "token": token}
 	return Fin
 
 }
