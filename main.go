@@ -24,11 +24,11 @@ var Config string = `
     path            = "QL" #青龙面板映射文件夹名称,一般为QL或ql
     QLip            = "http://127.0.0.1" #青龙面板的ip
     QLport          = "5700" #青龙面板的端口，默认为5700
-    notice          = "京东扫描二维码登录" #公告/说明
+    notice          = "使用京东扫描二维码登录" #公告/说明
     pushQr          = "" #消息推送二维码链接
     logName         = "chinnkarahoi_jd_scripts_jd_bean_change" #日志脚本名称
     allowAdd        = 0 #是否允许添加账号（0允许1不允许）不允许添加时则只允许已有账号登录
-    allowNum        = 100 #允许添加账号的最大数量,0w为不限制
+    allowNum        = 99 #允许添加账号的最大数量,-1为不限制
 
 
 #web服务设置
@@ -65,7 +65,7 @@ func main() {
 		r.Middleware.Next()
 	})
 
-	s.BindHandler("/", func(r *ghttp.Request) {
+	s.BindHandler("/info", func(r *ghttp.Request) {
 		r.Response.WriteExit("JDC is already!")
 	})
 	s.BindHandler("/qrcode", func(r *ghttp.Request) {
@@ -136,6 +136,12 @@ func nodeInfo() interface{} {
 		isAllow = false
 	}
 
+	//检查是否允许添加
+	allowAdd := g.Cfg().GetInt("app.allowAdd")
+	if allowAdd != 0 {
+		Num = 0
+		isAllow = false
+	}
 	return g.Map{"code": 0, "isAllow": isAllow, "Num": Num}
 }
 
@@ -481,60 +487,80 @@ func addCookie(cookie string) (int, string) {
 
 	//获取cookie列表
 	ckList := getCookieList()
+	ckList2 := getCookieList2()
 	if ckList == nil {
 		//检查是否允许添加
-		allow := g.Cfg().GetString("app.allowAdd")
-		if allow == "" {
-			allow = "0"
-		}
-		if allow != "0" {
-			return 400, "系统暂时不允许添加账号！"
+		allowAdd := g.Cfg().GetInt("app.allowAdd")
+		if allowAdd != 0 {
+			return 400, "该节点不允许添加账号！"
 		}
 		//检查是否超过账号限制
 		allowNum := g.Cfg().GetInt("app.allowNum")
 		nowNum := len(ckList)
 		if allowNum <= nowNum && allowNum != -1 {
-			return 400, "账号已达上限，请更换节点添加！"
+			return 400, "该节点账号已达上限，请更换节点添加！"
 		}
 		cookieAdd(cookie)
 		return 0, "添加成功！"
 	}
 
-	//检查账号
-	for _, v := range ckList {
-		j, err := gjson.DecodeToJson(v)
-		//解析结果
-		if err != nil {
-			log.Println("error！Json read error!")
+	//检查是否是新增账号
+	//是否存在
+	for _, v := range ckList2 {
+		if v == "" {
 			continue
 		}
-		//获取cookie
-		cookieT := j.GetString("value")
-
-		//获取id
-		cid := j.GetString("_id")
-
 		//获取cookie中的pt_pin
 		re := regexp.MustCompile("pt_pin=(.*?);")
-		reJ := re.FindStringSubmatch(cookieT)
+		reJ := re.FindStringSubmatch(v)
 		pin1 := reJ[1]
 		//判断如果一致，更新账号
 		if pin1 == pin2 {
 			isNew = false
-			cookieUpdate(cid, cookie)
-			return 0, "更新成功"
 		}
 
+	}
+	if !isNew {
+		var dbCid string = ""
+		for _, v := range ckList {
+			if v == "" {
+				continue
+			}
+			j, err := gjson.DecodeToJson(v)
+			//解析结果
+			if err != nil {
+				log.Println("error！Json read error!")
+				continue
+			}
+			//获取cookie
+			cookieT := j.GetString("value")
+
+			//获取id
+			cid := j.GetString("_id")
+
+			log.Println(v)
+			//获取cookie中的pt_pin
+			re := regexp.MustCompile("pt_pin=(.*?);")
+			reJ := re.FindStringSubmatch(cookieT)
+			if len(reJ) < 2 {
+				continue
+			}
+			pin1 := reJ[1]
+			//判断如果一致，更新账号
+			if pin1 == pin2 {
+				dbCid = cid
+			}
+
+		}
+		cookieUpdate(dbCid, cookie)
+		return 0, "更新成功"
 	}
 
 	if isNew {
 		//检查是否允许添加
-		allow := g.Cfg().GetString("app.allowAdd")
-		if allow == "" {
-			allow = "0"
-		}
-		if allow != "0" {
-			return 400, "系统暂时不允许添加账号！"
+		allowAdd := g.Cfg().GetInt("app.allowAdd")
+		if allowAdd != 0 {
+			return 400, "该节点不允许添加账号！"
 		}
 		//检查是否超过账号限制
 		allowNum := g.Cfg().GetInt("app.allowNum")
